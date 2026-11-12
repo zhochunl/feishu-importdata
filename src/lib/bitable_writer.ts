@@ -1,10 +1,13 @@
 import { bitable, FieldType, type IFieldConfig, type IRecordValue, type ITable } from '@lark-base-open/js-sdk';
-import { columnKind, RecordCursor, type DomainMeta } from './sas_xml';
+import { columnKind, type CellValue, type DomainCursor, type DomainMeta, type FieldKind } from './domain';
 
-/** SDK 注释：addRecords 单次上限 200 条 */
+/** 所有宿主都接受的最小批量，也是降级阶梯的最后一级。 */
 export const RECORD_BATCH = 200;
-
-export type FieldKind = 'number' | 'datetime' | 'text';
+/** JS SDK 单次上限 5000 行；老宿主可能只收 200 / 1000，被拒时沿这个阶梯往下降。 */
+export const BATCH_OPTIONS = [200, 500, 1000, 2000, 5000] as const;
+export const DEFAULT_BATCH = 5000;
+/** getRecordIdListByPage 文档上限 200，与写入批量无关。 */
+const LIST_PAGE = 200;
 
 export interface PreparedField {
   fieldId: string;
@@ -33,8 +36,7 @@ let tableIdByName: Map<string, string> | null = null;
 /** 一次性拿全部数据表元信息，避免依赖 getTableIdByName 找不到时的异常语义。 */
 async function lookupTableId(name: string): Promise<string | undefined> {
   if (!tableIdByName) {
-    const metas = await bitable.base.getTableMetaList();
-    tableIdByName = new Map(metas.map(m => [m.name, m.id]));
+    tableIdByName = new Map((await bitable.base.getTableMetaList()).map(meta => [meta.name, meta.id]));
   }
   return tableIdByName.get(name);
 }
@@ -92,41 +94,64 @@ async function readFields(table: ITable, kinds: Map<string, FieldKind>): Promise
   return fields;
 }
 
-function toCellValue(value: string | null, kind: FieldKind): number | string | null {
+function toCellValue(value: CellValue, kind: FieldKind): number | string | null {
   if (value === null) return null;
   if (kind === 'number') {
-    const num = Number(value);
+    const num = typeof value === 'number' ? value : Number(value);
     return Number.isFinite(num) ? num : null;
   }
   if (kind === 'datetime') {
+    if (typeof value === 'number') return Number.isFinite(value) ? value : null;
     const stamp = Date.parse(value.includes('T') ? value : `${value}T00:00:00`);
     return Number.isNaN(stamp) ? null : stamp;
   }
-  return value;
+  return typeof value === 'number' ? String(value) : value;
 }
 
 export interface ImportProgress {
   rows: number;
   batches: number;
+  /** 覆盖模式下先删掉的旧记录数 */
+  deleted: number;
+}
+
+export interface ImportHooks {
+  onBatch?: (progress: ImportProgress) => void;
+  onClear?: (deleted: number, total: number) => void;
+  onNotice?: (text: string) => void;
+  shouldAbort?: () => boolean;
+}
+
+export interface ImportOptions {
+  batchSize?: number;
+  /** true = 同名表先整体清空再整体写入；新建的表没有旧记录，跳过清空 */
+  replace?: boolean;
+}
+
+/** 一次导入内共享的批量大小：被宿主拒绝后降级并保持，不再每批重试大值。 */
+interface BatchState {
+  size: number;
 }
 
 /**
- * 流式写库：每次只保留 200 行，lab.xml 这种 70MB / 2 万行的域不会一次性驻留内存。
+ * 流式写库：每次只保留一批行，lab 这种 2 万行的域不会一次性驻留内存。
  * 返回导入行数；抛错时调用方按域记录已导入行数。
  */
 export async function importDomain(
-  xml: string,
+  cursor: DomainCursor,
   prepared: PreparedTable,
-  hooks: {
-    onBatch?: (progress: ImportProgress) => void;
-    shouldAbort?: () => boolean;
-  } = {},
+  hooks: ImportHooks = {},
+  options: ImportOptions = {},
 ): Promise<ImportProgress> {
-  const cursor = new RecordCursor(xml);
-  const progress: ImportProgress = { rows: 0, batches: 0 };
+  const state: BatchState = { size: options.batchSize ?? DEFAULT_BATCH };
+  const progress: ImportProgress = { rows: 0, batches: 0, deleted: 0 };
+
+  if (options.replace && !prepared.created) {
+    progress.deleted = await clearTable(prepared.table, state, hooks);
+  }
 
   for (;;) {
-    const { rows, done } = cursor.next(RECORD_BATCH);
+    const { rows, done } = cursor.next(state.size);
     if (rows.length) {
       const records: IRecordValue[] = rows.map(row => {
         const fields: Record<string, number | string> = {};
@@ -138,7 +163,7 @@ export async function importDomain(
         }
         return { fields };
       });
-      await prepared.table.addRecords(records);
+      await runBatched(records, state, chunk => prepared.table.addRecords(chunk), hooks.onNotice, '写入');
       progress.rows += rows.length;
       progress.batches++;
       hooks.onBatch?.(progress);
@@ -146,6 +171,92 @@ export async function importDomain(
     if (done) return progress;
     if (hooks.shouldAbort?.()) throw new AbortError();
   }
+}
+
+/** 先整体删：取全量 recordId 再分批删除，保留字段、视图和仪表盘引用。 */
+async function clearTable(table: ITable, state: BatchState, hooks: ImportHooks): Promise<number> {
+  const ids = await collectRecordIds(table, hooks.shouldAbort);
+  if (!ids.length) return 0;
+
+  hooks.onClear?.(0, ids.length);
+  let index = 0;
+  while (index < ids.length) {
+    if (hooks.shouldAbort?.()) throw new AbortError();
+    const chunk = ids.slice(index, index + state.size);
+    await runBatched(chunk, state, part => table.deleteRecords(part), hooks.onNotice, '删除');
+    index += chunk.length;
+    hooks.onClear?.(index, ids.length);
+  }
+  return ids.length;
+}
+
+/** 分页只读、期间不删，避免边删边翻页导致 pageToken 失效。 */
+async function collectRecordIds(table: ITable, shouldAbort?: () => boolean): Promise<string[]> {
+  const ids: string[] = [];
+  let pageToken: number | undefined;
+  for (;;) {
+    if (shouldAbort?.()) throw new AbortError();
+    const page = await table.getRecordIdListByPage({ pageSize: LIST_PAGE, pageToken });
+    ids.push(...page.recordIds);
+    if (!page.hasMore || page.pageToken === undefined || !page.recordIds.length) break;
+    pageToken = page.pageToken;
+  }
+  return ids;
+}
+
+/** 只有批量条数被拒时才降级重切；其它错误原样抛出，避免把已写入的记录再写一遍。 */
+async function runBatched<T>(
+  items: T[],
+  state: BatchState,
+  run: (chunk: T[]) => Promise<unknown>,
+  onNotice: ((text: string) => void) | undefined,
+  label: string,
+): Promise<void> {
+  let index = 0;
+  while (index < items.length) {
+    const chunk = items.slice(index, index + state.size);
+    try {
+      await runThrottled(chunk, run);
+      index += chunk.length;
+    } catch (err) {
+      const next = nextRung(state.size);
+      if (next === null || !isBatchSizeError(err)) throw err;
+      onNotice?.(`${label}每批 ${chunk.length} 条被拒绝（${messageOf(err)}），降到 ${next} 条重试`);
+      // 不推进 index：同一批数据按更小的批量重来，批量操作是原子的，不会写重
+      state.size = next;
+    }
+  }
+}
+
+const THROTTLED = /1254290|1254291|too many request|请求过快|write conflict|并发/i;
+
+/** 大批量容易撞上宿主的写频率/并发限制，这类错误退避重试，不影响数据。 */
+async function runThrottled<T>(items: T[], run: (chunk: T[]) => Promise<unknown>): Promise<void> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await run(items);
+      return;
+    } catch (err) {
+      if (attempt >= 3 || !THROTTLED.test(messageOf(err))) throw err;
+      await new Promise(resolve => setTimeout(resolve, 400 * (attempt + 1)));
+    }
+  }
+}
+
+function nextRung(size: number): number | null {
+  const lower = BATCH_OPTIONS.filter(option => option < size);
+  return lower.length ? lower[lower.length - 1] : null;
+}
+
+function isBatchSizeError(err: unknown): boolean {
+  const message = messageOf(err);
+  // 单元格过大、字段超限靠降级救不了，别白重试
+  if (/cell|格子|字段|column|field/i.test(message)) return false;
+  return /10214001|1254104|exceed|limit|too many|上限|超出|条数/i.test(message);
+}
+
+function messageOf(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
 }
 
 export class AbortError extends Error {

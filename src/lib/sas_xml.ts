@@ -5,27 +5,10 @@
  * 同名的列，用 `<ADA>[\s\S]*?</ADA>` 这类块正则会在一列的结束标签处截断记录。
  */
 
+import { emptyColumn, type CellValue, type DomainBatch, type DomainCursor, type DomainMeta, type ScanColumn } from './domain';
+
 const TAG_RE = /<(\/)?([A-Za-z_][\w.-]*)((?:\s+[A-Za-z_][\w.-]*\s*=\s*"[^"]*")*)\s*(\/)?>/g;
 const ENTITY_RE = /&(lt|gt|quot|apos|amp|#\d+|#x[0-9a-fA-F]+);/g;
-
-export type CellValue = string | null;
-
-export interface ScanColumn {
-  name: string;
-  numeric: number;
-  dateOnly: number;
-  leadingZero: number;
-  nonEmpty: number;
-}
-
-export interface DomainMeta {
-  /** zip 内文件名，如 lab.xml */
-  fileName: string;
-  /** 数据集名，同时作为多维表格数据表名，如 LAB */
-  tableName: string;
-  rowCount: number;
-  columns: ScanColumn[];
-}
 
 const NUMERIC_RE = /^-?(?:\d+(?:\.\d*)?|\.\d+)$/;
 const ISO_DATETIME_RE = /^\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?)?$/;
@@ -46,7 +29,7 @@ function decodeEntities(raw: string): string {
 }
 
 /** 从 <TABLE> 之后开始逐条产出记录；depth 状态机保证记录与列同名时也不串位。 */
-export class RecordCursor {
+export class RecordCursor implements DomainCursor {
   private readonly xml: string;
   private pos: number;
   private depth = 1;
@@ -66,7 +49,7 @@ export class RecordCursor {
     return this.recordTag;
   }
 
-  next(limit: number): { rows: Array<Array<[string, CellValue]>>; done: boolean } {
+  next(limit: number): DomainBatch {
     const rows: Array<Array<[string, CellValue]>> = [];
     if (this.done) return { rows, done: true };
 
@@ -144,12 +127,13 @@ export function scanDomain(fileName: string, xml: string): DomainMeta {
       for (const [name, value] of row) {
         let col = byName.get(name);
         if (!col) {
-          col = { name, numeric: 0, dateOnly: 0, leadingZero: 0, nonEmpty: 0 };
+          col = emptyColumn(name);
           byName.set(name, col);
           columns.push(col);
         }
         if (value === null) continue;
         col.nonEmpty++;
+        if (typeof value !== 'string') continue;
         if (NUMERIC_RE.test(value)) col.numeric++;
         if (LEADING_ZERO_RE.test(value)) col.leadingZero++;
         if (ISO_DATETIME_RE.test(value)) col.dateOnly++;
@@ -163,12 +147,4 @@ export function scanDomain(fileName: string, xml: string): DomainMeta {
   if (!rowCount) throw new Error(`${fileName} 是空数据集`);
 
   return { fileName, tableName, rowCount, columns };
-}
-
-/** 列类型判定：整列都有值且形态一致才升型，避免把 "01" 这类编码写成 1。 */
-export function columnKind(col: ScanColumn): 'number' | 'datetime' | 'text' {
-  if (col.nonEmpty === 0) return 'text';
-  if (col.numeric === col.nonEmpty && col.leadingZero === 0) return 'number';
-  if (col.dateOnly === col.nonEmpty) return 'datetime';
-  return 'text';
 }

@@ -3,13 +3,14 @@
   "private": true,
   "version": "1.0.0",
   "type": "module",
-  "description": "飞书多维表格边栏插件：浏览器端解密 zip、解析 SAS XML 数据包并写入同名数据表",
+  "description": "飞书多维表格边栏插件：浏览器端解密 zip、解析 SAS sas7bdat / XML 数据包并写入同名数据表",
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview"
   },
   "dependencies": {
+    "@irbisadm/statfmt": "^0.1.1",
     "@lark-base-open/js-sdk": "^1.0.2",
     "@zip.js/zip.js": "^2.24.0",
     "normalize.css": "^8.0.1",

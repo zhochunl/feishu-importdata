@@ -1,0 +1,433 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Mock Bitable Host · 导入插件联调台</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #061215;
+        --surface: #0b1e22;
+        --line: #1d4148;
+        --line-soft: #143036;
+        --text: #e2f4f1;
+        --muted: #93b3b5;
+        --faint: #63868a;
+        --primary: #2fe0c0;
+        --info: #58a6ff;
+        --busy: #ffb43d;
+        --done: #6ee7a8;
+        --fail: #ff7a7a;
+        --pink: #ff7ab8;
+        --sans: -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+        --mono: ui-monospace, "Cascadia Mono", Consolas, monospace;
+      }
+      * { box-sizing: border-box; scrollbar-width: thin; scrollbar-color: var(--line) rgba(255,255,255,.03); }
+      ::-webkit-scrollbar { width: 8px; height: 8px; }
+      ::-webkit-scrollbar-track { background: rgba(255,255,255,.03); border-radius: 8px; }
+      ::-webkit-scrollbar-thumb { background: var(--line); border-radius: 8px; }
+      ::-webkit-scrollbar-thumb:hover { background: #12b39a; }
+      html, body { height: 100%; margin: 0; }
+      body {
+        display: flex;
+        gap: 14px;
+        padding: 14px;
+        background:
+          radial-gradient(70% 50% at 0% 0%, rgba(47,224,192,.12), transparent 60%),
+          radial-gradient(60% 50% at 100% 100%, rgba(255,122,184,.1), transparent 60%),
+          var(--bg);
+        color: var(--text);
+        font-family: var(--sans);
+        font-size: 13px;
+      }
+      .side { flex: none; width: 300px; display: flex; flex-direction: column; gap: 10px; overflow-y: auto; }
+      .frame-wrap { flex: none; display: flex; flex-direction: column; gap: 8px; }
+      iframe {
+        width: 380px;
+        height: 760px;
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        background: var(--bg);
+        box-shadow: 0 24px 60px -30px #000;
+      }
+      .rest { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 10px; }
+      .card {
+        padding: 11px 12px;
+        border: 1px solid var(--line-soft);
+        border-radius: 12px;
+        background: linear-gradient(160deg, rgba(255,255,255,.045), rgba(255,255,255,.012));
+      }
+      h1 { margin: 0 0 2px; font-size: 15px; letter-spacing: -.01em; }
+      h2 { margin: 0 0 8px; font-size: 11px; letter-spacing: .12em; color: var(--faint); text-transform: uppercase; }
+      p.sub { margin: 0; font-size: 11px; line-height: 1.6; color: var(--muted); }
+      label.row { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 8px; font-size: 12px; color: var(--muted); }
+      select, input[type="number"], input[type="text"] {
+        padding: 5px 7px; border-radius: 8px; border: 1px solid var(--line);
+        background: rgba(0,0,0,.32); color: var(--text); font-family: var(--sans); font-size: 12px; outline: none;
+      }
+      input[type="text"] { width: 100%; font-family: var(--mono); font-size: 11px; }
+      select:focus, input:focus { border-color: var(--primary); }
+      button {
+        padding: 7px 11px; border-radius: 9px; border: 1px solid var(--line);
+        background: rgba(255,255,255,.04); color: var(--text); font-family: var(--sans); font-size: 12px; cursor: pointer;
+      }
+      button:hover { border-color: var(--primary); color: var(--primary); }
+      button.solid { border-color: transparent; background: linear-gradient(135deg, var(--primary), #35c8ff); color: #04211d; font-weight: 650; }
+      .btns { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 10px; }
+      .file { display: block; margin-top: 8px; font-size: 11px; color: var(--muted); }
+      input[type="file"] { margin-top: 5px; width: 100%; font-size: 11px; color: var(--faint); }
+      table { width: 100%; border-collapse: collapse; font-size: 11.5px; }
+      th, td { padding: 5px 6px; text-align: left; border-bottom: 1px solid var(--line-soft); }
+      th { color: var(--faint); font-weight: 600; font-size: 10px; letter-spacing: .08em; }
+      td.num { font-family: var(--mono); font-variant-numeric: tabular-nums; text-align: right; }
+      td.name { font-family: var(--mono); color: var(--primary); }
+      .pill { padding: 1px 7px; border-radius: 999px; font-size: 10px; border: 1px solid; }
+      .pill.new { color: var(--info); border-color: rgba(88,166,255,.35); background: rgba(88,166,255,.1); }
+      .pill.seed { color: var(--pink); border-color: rgba(255,122,184,.35); background: rgba(255,122,184,.1); }
+      .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
+      .stat { padding: 7px 6px; text-align: center; border-radius: 9px; border: 1px solid var(--line-soft); background: rgba(0,0,0,.24); }
+      .stat b { display: block; font-family: var(--mono); font-size: 15px; }
+      .stat span { font-size: 9.5px; color: var(--faint); }
+      .stat.add b { color: var(--done); }
+      .stat.del b { color: var(--pink); }
+      .stat.rej b { color: var(--busy); }
+      .log { flex: 1; min-height: 120px; overflow-y: auto; font-family: var(--mono); font-size: 10.5px; line-height: 1.75; }
+      .log div { display: flex; gap: 8px; }
+      .log .t { flex: none; color: var(--faint); }
+      .log .k { flex: none; min-width: 190px; color: var(--info); }
+      .log .m { color: var(--muted); word-break: break-all; }
+      .log .warn .k, .log .warn .m { color: var(--busy); }
+      .log .err .k, .log .err .m { color: var(--fail); }
+      .log .del .k { color: var(--pink); }
+      .log .add .k { color: var(--done); }
+      .empty { color: var(--faint); font-size: 11px; padding: 8px 0; }
+    </style>
+  </head>
+  <body>
+    <aside class="side">
+      <div class="card">
+        <h1>Mock Bitable Host</h1>
+        <p class="sub">按 JS SDK 的 postMessage 协议模拟多维表格宿主，用来验证连接探测、覆盖更新的先删后加、以及 5000 行批量与降级。仅开发用，不会打进 dist。</p>
+      </div>
+
+      <div class="card">
+        <h2>宿主行为</h2>
+        <label class="row">握手
+          <select id="handshake">
+            <option value="normal">立即响应</option>
+            <option value="late">延迟 4 秒</option>
+            <option value="never">不响应</option>
+          </select>
+        </label>
+        <label class="row">单次记录上限
+          <select id="maxBatch">
+            <option>200</option><option>500</option><option>1000</option><option>2000</option><option selected>5000</option>
+          </select>
+        </label>
+        <label class="row">超限返回
+          <select id="rejectKind">
+            <option value="limit">条数超限 10214001</option>
+            <option value="throttle">限流 1254290</option>
+          </select>
+        </label>
+        <label class="row">限流前 N 次
+          <input id="throttleTimes" type="number" min="1" max="6" value="2" style="width: 62px" />
+        </label>
+        <label class="row">每次调用延迟
+          <input id="latency" type="number" min="0" max="500" value="4" style="width: 62px" />
+        </label>
+        <label class="row">边栏宽度
+          <select id="width"><option>320</option><option selected>380</option><option>640</option></select>
+        </label>
+      </div>
+
+      <div class="card">
+        <h2>预置数据</h2>
+        <p class="sub">这些表在插件看来「已存在」，覆盖更新时应当先被清空。</p>
+        <div style="margin-top: 8px"><input id="seedNames" type="text" value="LAB,DM,AE,EX,CM" /></div>
+        <label class="row">每表预置记录
+          <input id="seedRows" type="number" min="0" max="20000" step="100" value="1200" style="width: 78px" />
+        </label>
+        <div class="btns">
+          <button id="reset" class="solid">重置宿主并重载插件</button>
+          <button id="reload">仅重载插件</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>数据包</h2>
+        <p class="sub">选中的 zip 会转交给下方 iframe 里的插件（同源，直接塞进它的 file input）。</p>
+        <label class="file">选择 zip<input id="pkg" type="file" accept=".zip" /></label>
+        <div class="btns"><button id="status">读取插件状态</button></div>
+      </div>
+    </aside>
+
+    <div class="frame-wrap">
+      <iframe id="app" src="/" title="导入插件"></iframe>
+    </div>
+
+    <section class="rest">
+      <div class="card">
+        <h2>宿主统计</h2>
+        <div class="stats">
+          <div class="stat"><b id="sCalls">0</b><span>API 调用</span></div>
+          <div class="stat add"><b id="sAdded">0</b><span>写入记录</span></div>
+          <div class="stat del"><b id="sDeleted">0</b><span>删除记录</span></div>
+          <div class="stat rej"><b id="sRejected">0</b><span>拒绝次数</span></div>
+        </div>
+      </div>
+      <div class="card">
+        <h2>数据表</h2>
+        <div style="max-height: 240px; overflow-y: auto">
+          <table>
+            <thead><tr><th>表名</th><th>来源</th><th class="num">字段</th><th class="num">当前记录</th><th class="num">累计写入</th><th class="num">累计删除</th></tr></thead>
+            <tbody id="tables"></tbody>
+          </table>
+        </div>
+      </div>
+      <div class="card" style="flex: 1; min-height: 0; display: flex; flex-direction: column">
+        <h2>调用流水 <button id="clearLog" style="float: right; padding: 2px 8px; font-size: 10px">清空</button></h2>
+        <div class="log" id="log"></div>
+      </div>
+    </section>
+
+    <script>
+      const $ = id => document.getElementById(id);
+      const frame = $('app');
+      const stats = { calls: 0, added: 0, deleted: 0, rejected: 0 };
+      let tables = [];
+      let seq = 0;
+      let throttleHits = 0;
+      const nid = p => `${p}${(++seq).toString(36).padStart(4, '0')}`;
+
+      function seed() {
+        seq = 0;
+        const rows = Number($('seedRows').value) || 0;
+        tables = $('seedNames').value.split(',').map(s => s.trim().toUpperCase()).filter(Boolean).map(name => {
+          const fields = ['SUBJID', 'VISIT', 'VALUE'].map(n => ({ id: nid('fld'), name: n, type: n === 'VALUE' ? 2 : 1 }));
+          return {
+            id: nid('tbl'), name, origin: 'seed', fields, added: 0, deleted: 0,
+            records: Array.from({ length: rows }, (_, i) => ({
+              recordId: nid('rec'),
+              fields: { [fields[0].id]: `OLD-${i}`, [fields[1].id]: 'BASELINE', [fields[2].id]: i },
+            })),
+          };
+        });
+        stats.calls = stats.added = stats.deleted = stats.rejected = 0;
+        throttleHits = 0;
+        render();
+      }
+
+      function render() {
+        $('sCalls').textContent = stats.calls.toLocaleString();
+        $('sAdded').textContent = stats.added.toLocaleString();
+        $('sDeleted').textContent = stats.deleted.toLocaleString();
+        $('sRejected').textContent = stats.rejected.toLocaleString();
+        $('tables').innerHTML = tables.length
+          ? tables.map(t => `<tr><td class="name">${t.name}</td><td><span class="pill ${t.origin}">${t.origin === 'seed' ? '预置' : '新建'}</span></td><td class="num">${t.fields.length}</td><td class="num">${t.records.length.toLocaleString()}</td><td class="num">${t.added.toLocaleString()}</td><td class="num">${t.deleted.toLocaleString()}</td></tr>`).join('')
+          : '<tr><td colspan="6" class="empty">宿主里还没有任何数据表</td></tr>';
+      }
+
+      let logCount = 0;
+      function log(kind, key, msg, tone = '') {
+        const box = $('log');
+        const line = document.createElement('div');
+        line.className = tone;
+        line.innerHTML = `<span class="t">${new Date().toLocaleTimeString('zh-CN', { hour12: false })}</span><span class="k">${key}</span><span class="m">${msg}</span>`;
+        box.appendChild(line);
+        if (++logCount > 600) box.removeChild(box.firstChild);
+        box.scrollTop = box.scrollHeight;
+      }
+
+      const QUIET = new Set(['getName', 'getType', 'isFieldExist', 'isTableExist', 'getBasePermission', 'getPermission', 'registerBaseEvent', 'unregisterBaseEvent', 'registerTableEvent', 'unregisterTableEvent', 'setClientVersion', 'showPrivateTips', 'getFieldMetaById']);
+      const tableOf = ctx => tables.find(t => t.id === ctx[0]);
+      const fail = (code, message) => ({ e: 'bte', code, message, msg: message });
+
+      function checkBatch(size) {
+        const max = Number($('maxBatch').value);
+        if (size <= max) return null;
+        if ($('rejectKind').value === 'throttle' && throttleHits < Number($('throttleTimes').value)) {
+          throttleHits++;
+          stats.rejected++;
+          return fail(1254290, 'Too many request');
+        }
+        stats.rejected++;
+        return fail(10214001, `single record operation exceeds records limit: ${size} > ${max}`);
+      }
+
+      const api = {
+        getTableMetaList: () => tables.map(t => ({ id: t.id, name: t.name })),
+        getTableMetaById: ([id]) => { const t = tables.find(x => x.id === id); return t ? { id: t.id, name: t.name } : null; },
+        isTableExist: ([id]) => tables.some(t => t.id === id),
+        getTableIdByName: ([name]) => tables.find(t => t.name === name)?.id ?? '',
+        addTable: ([cfg]) => {
+          const table = {
+            id: nid('tbl'), name: cfg.name, origin: 'new', added: 0, deleted: 0, records: [],
+            fields: (cfg.fields || []).map(f => ({ id: nid('fld'), name: f.name, type: f.type })),
+          };
+          tables.push(table);
+          return { tableId: table.id, index: tables.length - 1 };
+        },
+        getFieldMetaList: (args, ctx) => (tableOf(ctx)?.fields ?? []).map(f => ({ id: f.id, name: f.name, type: f.type, property: null })),
+        getFieldMetaById: ([id], ctx) => { const f = tableOf(ctx)?.fields.find(x => x.id === id); return f ? { id: f.id, name: f.name, type: f.type, property: null } : null; },
+        isFieldExist: ([id], ctx) => !!tableOf(ctx)?.fields.some(f => f.id === id),
+        getFieldIdByName: ([name], ctx) => tableOf(ctx)?.fields.find(f => f.name === name)?.id ?? '',
+        getName: (args, ctx) => {
+          const table = tableOf(ctx);
+          return table?.fields.find(f => f.id === ctx[1])?.name ?? table?.name ?? '';
+        },
+        getType: (args, ctx) => tableOf(ctx)?.fields.find(f => f.id === ctx[1])?.type ?? 1,
+        addField: ([cfg], ctx) => {
+          const table = tableOf(ctx);
+          const field = { id: nid('fld'), name: cfg.name ?? cfg, type: cfg.type ?? 1 };
+          table.fields.push(field);
+          return field.id;
+        },
+        addRecords: ([records], ctx) => {
+          const table = tableOf(ctx);
+          const bad = checkBatch(records.length);
+          if (bad) return bad;
+          const ids = records.map(r => {
+            const recordId = nid('rec');
+            table.records.push({ recordId, fields: r.fields });
+            return recordId;
+          });
+          table.added += ids.length;
+          stats.added += ids.length;
+          return ids;
+        },
+        deleteRecords: ([ids], ctx) => {
+          const table = tableOf(ctx);
+          const bad = checkBatch(ids.length);
+          if (bad) return bad;
+          const kill = new Set(ids);
+          const before = table.records.length;
+          table.records = table.records.filter(r => !kill.has(r.recordId));
+          const gone = before - table.records.length;
+          table.deleted += gone;
+          stats.deleted += gone;
+          return true;
+        },
+        getRecordIdListByPage: ([param], ctx) => {
+          const table = tableOf(ctx);
+          const size = Math.min(param?.pageSize || 200, 200);
+          const start = Number(param?.pageToken ?? 0);
+          const slice = table.records.slice(start, start + size);
+          const next = start + slice.length;
+          return { recordIds: slice.map(r => r.recordId), total: table.records.length, hasMore: next < table.records.length, pageToken: next };
+        },
+        getSelection: () => ({ tableId: tables[0]?.id ?? '', viewId: '', recordId: '' }),
+        isEditable: () => true,
+        getBasePermission: () => true,
+        getPermission: () => true,
+        registerBaseEvent: () => true,
+        unregisterBaseEvent: () => true,
+        registerTableEvent: () => true,
+        unregisterTableEvent: () => true,
+        setClientVersion: () => true,
+        showPrivateTips: () => true,
+      };
+
+      function describe(method, args, ctx, res) {
+        if (method === 'addRecords') return `表 ${tableOf(ctx)?.name} +${args[0].length} 条 → ${Array.isArray(res) ? 'ok' : res.message}`;
+        if (method === 'deleteRecords') return `表 ${tableOf(ctx)?.name} -${args[0].length} 条 → ${res === true ? 'ok' : res.message}`;
+        if (method === 'getRecordIdListByPage') return `表 ${tableOf(ctx)?.name} token=${args[0]?.pageToken ?? 0} → ${res.recordIds.length} 条 hasMore=${res.hasMore}`;
+        if (method === 'addTable') return `新建 ${args[0].name}（${(args[0].fields || []).length} 字段）`;
+        if (method === 'addField') return `表 ${tableOf(ctx)?.name} 补字段 ${args[0]?.name ?? args[0]}`;
+        if (method === 'getTableMetaList') return `${res.length} 张表`;
+        return JSON.stringify(args).slice(0, 120);
+      }
+
+      window.addEventListener('message', event => {
+        if (event.source !== frame.contentWindow) return;
+        const data = event.data;
+        if (!data || typeof data !== 'object') return;
+
+        if (data.type === 'handshake') {
+          if (data.payload?.proactive) {
+            const mode = $('handshake').value;
+            if (mode === 'never') { log('', 'handshake', '收到握手请求，按设置不响应', 'warn'); return; }
+            const send = () => {
+              frame.contentWindow.postMessage({ id: data.id, type: 'handshake', payload: { prefixId: 'mock' } }, '*');
+              log('', 'handshake', `已回应握手（${mode === 'late' ? '延迟 4 秒' : '立即'}）`);
+            };
+            mode === 'late' ? setTimeout(send, 4000) : send();
+          }
+          return;
+        }
+
+        if (data.type !== 'invoke') return;
+        const params = data.payload?.params ?? [];
+        const key = data.payload?.key ?? '';
+        const method = String(key).split('_').pop();
+        stats.calls += params.length;
+        const latency = Number($('latency').value) || 0;
+
+        setTimeout(() => {
+          const res = params.map(item => {
+            const args = item.p ?? [];
+            const ctx = item.c ?? [];
+            const handler = api[method];
+            let out;
+            if (!handler) {
+              out = fail(10210000, `mock host 未实现 ${key}`);
+              log('', key, '未实现的 API', 'err');
+            } else {
+              try { out = handler(args, ctx); } catch (err) { out = fail(10210000, String(err)); log('', key, String(err), 'err'); }
+              const tone = out && out.e === 'bte' ? 'err' : method === 'deleteRecords' ? 'del' : method === 'addRecords' ? 'add' : '';
+              if (!QUIET.has(method)) log('', method, describe(method, args, ctx, out), tone);
+            }
+            return out;
+          });
+          render();
+          frame.contentWindow.postMessage({ id: data.id, type: 'callback', payload: { res } }, '*');
+        }, latency);
+      });
+
+      $('width').onchange = () => { frame.style.width = `${$('width').value}px`; };
+      $('reload').onclick = () => { frame.src = '/'; };
+      $('reset').onclick = () => { seed(); $('log').innerHTML = ''; logCount = 0; frame.src = '/'; };
+      $('clearLog').onclick = () => { $('log').innerHTML = ''; logCount = 0; };
+      $('seedNames').onchange = seed;
+      $('seedRows').onchange = seed;
+
+      $('pkg').onchange = () => {
+        const file = $('pkg').files?.[0];
+        if (!file) return;
+        const doc = frame.contentDocument;
+        const input = doc.querySelector('input[type=file]');
+        if (!input) { log('', 'relay', '插件当前不在选包步骤，先点「重新选择」', 'warn'); return; }
+        const dt = new DataTransfer();
+        dt.items.add(file);
+        input.files = dt.files;
+        input.dispatchEvent(new Event('change', { bubbles: true }));
+        log('', 'relay', `已把 ${file.name} 交给插件`);
+      };
+
+      $('status').onclick = () => {
+        const doc = frame.contentDocument;
+        const stage = [...doc.querySelectorAll('.step')].findIndex(s => s.classList.contains('is-active'));
+        const buttons = [...doc.querySelectorAll('.dock-actions .btn')].map(b => `${b.textContent}${b.disabled ? '(禁用)' : ''}`);
+        log('', 'plugin', `步骤 ${stage + 1}；按钮 ${buttons.join(' / ')}`);
+      };
+
+      window.mockHost = {
+        tables: () => tables.map(t => ({ name: t.name, origin: t.origin, fields: t.fields.length, records: t.records.length, added: t.added, deleted: t.deleted })),
+        sample: (name, count = 2, skip = 0) => {
+          const t = tables.find(x => x.name === name);
+          if (!t) return null;
+          const byId = new Map(t.fields.map(f => [f.id, `${f.name}:${f.type}`]));
+          return t.records.slice(skip, skip + count).map(r => Object.fromEntries(
+            Object.entries(r.fields).map(([id, v]) => [byId.get(id) || id, v]),
+          ));
+        },
+        stats: () => ({ ...stats }),
+        doc: () => frame.contentDocument,
+      };
+
+      seed();
+      log('', 'host', 'mock 宿主就绪，等待插件握手');
+    </script>
+  </body>
+</html>
