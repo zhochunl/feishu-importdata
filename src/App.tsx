@@ -14,7 +14,6 @@ import {
   invalidateTableCache,
   isAbortError,
   prepareTable,
-  SDK_BATCH_LIMIT,
 } from './lib/bitable_writer';
 import './index.css';
 
@@ -87,6 +86,7 @@ export default function App() {
   const [rows, setRows] = useState<RowState[]>([]);
   const [runPaths, setRunPaths] = useState<string[]>([]);
   const [running, setRunning] = useState(false);
+  const [finished, setFinished] = useState(false);
   const [batchSize, setBatchSize] = useState<number>(DEFAULT_BATCH);
   const [mode, setMode] = useState<WriteMode>('append');
   const [confirmOpen, setConfirmOpen] = useState(false);
@@ -185,9 +185,10 @@ export default function App() {
         })),
       );
       setStage('import');
+      setFinished(false);
       const empty = zip.domains.filter(entry => !entry.rowCount).length;
       log(
-        `解析完成：${zip.domains.length} 个域，共 ${totalRows.toLocaleString()} 行${empty ? `；${empty} 个空数据集已默认取消勾选` : ''}`,
+        `解析完成：${zip.domains.length} 个数据集，共 ${totalRows.toLocaleString()} 行${empty ? `；${empty} 个空数据集已默认取消勾选` : ''}`,
         'ok',
       );
     } catch (err) {
@@ -210,6 +211,7 @@ export default function App() {
     abortRef.current = false;
     await dropLoaded();
     setFile(null);
+    setFinished(false);
     setZipInfo(null);
     setRows([]);
     setRunPaths([]);
@@ -243,7 +245,7 @@ export default function App() {
   const doneCount = useMemo(() => rows.filter(row => row.status === '完成').length, [rows]);
   const failCount = useMemo(() => rows.filter(row => row.status === '失败').length, [rows]);
 
-  // 进度条只反映最近一次实际跑过的域，改勾选或重跑部分域都不会把上一次的数字混进来
+  // 进度条只反映最近一次实际跑过的数据集，改勾选或重跑部分数据集都不会把上一次的数字混进来
   const runRows = useMemo(() => {
     if (!runPaths.length) return [];
     const paths = new Set(runPaths);
@@ -273,15 +275,16 @@ export default function App() {
     setRunPaths([...paths]);
     setRows(prev => prev.map(row => (paths.has(row.entry.path) ? { ...row, written: 0, deleted: 0, clearTotal: 0, message: '' } : row)));
     const replace = mode === 'replace';
+    const startedAt = Date.now();
     log(
-      `开始${replace ? '覆盖更新' : '追加导入'} ${selectedRows.length} 个域，共 ${plannedRows.toLocaleString()} 行（每批 ${batchSize} 条）`,
+      `开始${replace ? '覆盖更新' : '追加导入'} ${selectedRows.length} 个数据集，共 ${plannedRows.toLocaleString()} 行（每批 ${batchSize} 条）`,
       replace ? 'warn' : 'info',
     );
 
     for (const row of selectedRows) {
       if (abortRef.current) {
         patch(row.entry.path, { status: '已中止' });
-        log(`已中止，跳过 ${row.entry.tableName} 及后续域`, 'warn');
+        log(`已中止，跳过 ${row.entry.tableName} 及后续数据集`, 'warn');
         break;
       }
       try {
@@ -326,7 +329,8 @@ export default function App() {
     }
 
     setRunning(false);
-    log('本次导入结束', 'ok');
+    setFinished(true);
+    log(`本次导入结束，用时 ${formatDuration(Date.now() - startedAt)}`, 'ok');
   };
 
   const selectVisible = (value: boolean) => {
@@ -416,7 +420,6 @@ export default function App() {
                 </svg>
               </span>
               <strong>{inspecting ? '读取压缩包目录…' : '拖入或点击选择 zip 数据包'}</strong>
-              <span className="dropzone-hint">SAS 导出的压缩包，包内每个 sas7bdat 对应一个数据集</span>
             </div>
             <input
               ref={fileRef}
@@ -426,9 +429,6 @@ export default function App() {
               onChange={event => void pickFile(event.target.files?.[0])}
             />
             {pickError && <div className="notice is-err">{pickError}</div>}
-            <p className="panel-note">
-              选包阶段只读取压缩包目录，不解密内容；是否需要密码、有多少个数据集，下一步会告诉你。
-            </p>
           </section>
         )}
 
@@ -508,15 +508,15 @@ export default function App() {
                   />
                 </div>
                 <span className="parse-count">
-                  解析中 <b>{parseProgress.done}</b> / {parseProgress.total} 域
+                  解析中 <b>{parseProgress.done}</b> / {parseProgress.total} 个数据集
                   {parseProgress.current && <em className="parse-current">{parseProgress.current}</em>}
                 </span>
               </div>
             )}
 
             <p className="panel-note">
-              先校验密码再逐域解析：密码错误会立刻提示，压缩包不会丢，改完密码重试即可。sas7bdat
-              需要整份解压后才能读元信息，大域会慢几秒。
+              先校验密码再逐个数据集解析：密码错误会立刻提示，压缩包不会丢，改完密码重试即可。sas7bdat
+              需要整份解压后才能读元信息，大数据集会慢几秒。
             </p>
           </section>
         )}
@@ -562,16 +562,10 @@ export default function App() {
             <div className="controls">
               <label className="select">
                 <span>每批写入</span>
-                <select
-                  value={batchSize}
-                  disabled={running}
-                  title="JS SDK 单次上限 5000 行。10000 / 20000 仅供压测，宿主拒绝后会自动沿 5000→2000→1000→500→200 降级并保持。"
-                  onChange={event => setBatchSize(Number(event.target.value))}
-                >
+                <select value={batchSize} disabled={running} onChange={event => setBatchSize(Number(event.target.value))}>
                   {BATCH_OPTIONS.map(size => (
                     <option key={size} value={size}>
-                      {size} 条
-                      {size === SDK_BATCH_LIMIT ? '（SDK 上限）' : size > SDK_BATCH_LIMIT ? '（压测）' : ''}
+                      {size}
                     </option>
                   ))}
                 </select>
@@ -581,7 +575,7 @@ export default function App() {
             <div className="summary">
               <div className="summary-cell">
                 <b>{rows.length}</b>
-                <span>个域</span>
+                <span>个数据集</span>
               </div>
               <div className="summary-cell">
                 <b>{totalRows.toLocaleString()}</b>
@@ -602,7 +596,7 @@ export default function App() {
                 className="search"
                 type="search"
                 value={query}
-                placeholder="过滤域名，如 LAB"
+                placeholder="过滤数据集名，如 LAB"
                 disabled={running}
                 onChange={event => setQuery(event.target.value)}
               />
@@ -634,12 +628,12 @@ export default function App() {
                   onToggle={selected => patch(row.entry.path, { selected })}
                 />
               ))}
-              {!visibleRows.length && <div className="empty">没有匹配「{query}」的域。</div>}
+              {!visibleRows.length && <div className="empty">没有匹配「{query}」的数据集。</div>}
             </div>
 
             {failCount > 0 && (
               <div className="notice is-err">
-                {failCount} 个域写入失败，详情见下方日志；处理后可只勾选这些域重跑。
+                {failCount} 个数据集写入失败，详情见下方日志；处理后可只勾选这些数据集重跑。
               </div>
             )}
           </section>
@@ -684,7 +678,11 @@ export default function App() {
                 onClick={startImport}
                 disabled={running || !selectedRows.length}
               >
-                {running ? '导入中…' : `${mode === 'replace' ? '覆盖更新' : '开始导入'}（${selectedRows.length} 域）`}
+                {running
+                  ? '导入中…'
+                  : finished
+                    ? `重新导入（${selectedRows.length} 个数据集）`
+                    : `${mode === 'replace' ? '覆盖更新' : '开始导入'}（${selectedRows.length} 个数据集）`}
               </button>
               <button
                 className="btn is-danger"
@@ -737,7 +735,7 @@ export default function App() {
               <h2 id="confirm-title">覆盖更新会先删除旧数据</h2>
             </div>
             <p className="dialog-lead">
-              下列 <b>{selectedRows.length}</b> 个域中，凡是多维表格里已存在同名数据表的，都会
+              下列 <b>{selectedRows.length}</b> 个数据集中，凡是多维表格里已存在同名数据表的，都会
               <b>先删除该表的全部现有记录</b>，再写入本次的 {plannedRows.toLocaleString()} 行。
             </p>
             <ul className="dialog-list">
@@ -747,7 +745,7 @@ export default function App() {
                   <span className="dialog-rows">{row.entry.rowCount.toLocaleString()} 行</span>
                 </li>
               ))}
-              {selectedRows.length > 8 && <li className="dialog-more">还有 {selectedRows.length - 8} 个域…</li>}
+              {selectedRows.length > 8 && <li className="dialog-more">还有 {selectedRows.length - 8} 个数据集…</li>}
             </ul>
             <ul className="dialog-notes">
               <li>字段、视图、仪表盘引用都会保留，只删记录。</li>
@@ -856,6 +854,14 @@ function kindCounts(entry: DomainEntry) {
   const counts = { number: 0, datetime: 0, text: 0 };
   for (const col of entry.columns) counts[col.kind]++;
   return counts;
+}
+
+function formatDuration(ms: number): string {
+  const seconds = Math.max(1, Math.round(ms / 1000));
+  if (seconds < 60) return `${seconds} 秒`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes} 分 ${seconds % 60} 秒`;
+  return `${Math.floor(minutes / 60)} 小时 ${minutes % 60} 分`;
 }
 
 function formatBytes(bytes: number): string {

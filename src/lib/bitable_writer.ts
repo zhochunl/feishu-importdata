@@ -1,12 +1,8 @@
 import { bitable, FieldType, type IFieldConfig, type IRecordValue, type ITable } from '@lark-base-open/js-sdk';
 import { type CellValue, type DomainCursor, type DomainMeta, type FieldKind } from './domain';
 
-/**
- * JS SDK 单次上限 5000 行；老宿主可能只收 200 / 1000，被拒时沿这个阶梯往下降。
- * 10000 / 20000 超出手册上限，仅用于压测：宿主拒绝后会按阶梯降回 5000。
- */
-export const BATCH_OPTIONS = [200, 500, 1000, 2000, 5000, 10000, 20000] as const;
-export const SDK_BATCH_LIMIT = 5000;
+/** JS SDK 单次最多 5000 行；老宿主可能只收 200 / 1000，被拒时沿这个阶梯往下降。 */
+export const BATCH_OPTIONS = [200, 500, 1000, 2000, 5000] as const;
 export const DEFAULT_BATCH = 5000;
 /** getRecordIdListByPage 文档上限 200，与写入批量无关。 */
 const LIST_PAGE = 200;
@@ -136,8 +132,8 @@ interface BatchState {
 }
 
 /**
- * 流式写库：每次只保留一批行，lab 这种 2 万行的域不会一次性驻留内存。
- * 返回导入行数；抛错时调用方按域记录已导入行数。
+ * 流式写库：每次只保留一批行，lab 这种 2 万行的数据集不会一次性驻留内存。
+ * 返回导入行数；抛错时调用方按数据集记录已导入行数。
  */
 export async function importDomain(
   cursor: DomainCursor,

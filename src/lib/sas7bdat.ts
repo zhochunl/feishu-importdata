@@ -108,7 +108,7 @@ export function scanSas7bdat(fileName: string, bytes: Uint8Array): SasScan {
 
 /**
  * 分批取行。sas7bdat 的页需要从文件尾部回读，无法只解压前缀，
- * 所以整域字节必须常驻；但行是推模式产出的，用 rowOffset 逐批重放，
+ * 所以整个数据集的字节必须常驻；但行是推模式产出的，用 rowOffset 逐批重放，
  * 跳过已消费的行时不解码单元格，内存里只留当前这一批。
  */
 export class Sas7bdatCursor implements DomainCursor {

@@ -21,7 +21,7 @@ export interface ZipInfo {
 export interface LoadedZip {
   fileName: string;
   domains: DomainEntry[];
-  /** 单个域按需解压：整包只占几 MB 压缩数据，域内容用完即释放 */
+  /** 单个数据集按需解压：整包只占几 MB 压缩数据，内容用完即释放 */
   readDomain(path: string): Promise<DomainCursor>;
   close(): Promise<void>;
 }
@@ -112,7 +112,7 @@ export async function loadZip(
   try {
     for (const [index, entry] of data.entries()) {
       const name = entry.filename.replace(/^.*[\\/]/, '');
-      // 大域整份解压要几秒，先把当前域名报出去，界面不会看着像卡死
+      // 大数据集整份解压要几秒，先把当前数据集名报出去，界面不会看着像卡死
       onProgress?.(index, data.length, name);
       await new Promise(resolve => setTimeout(resolve, 0));
       const bytes = await entry.getData(new Uint8ArrayWriter());
