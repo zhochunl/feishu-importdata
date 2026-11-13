@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { columnKind } from './lib/domain';
 import {
   inspectZip,
   isPasswordError,
@@ -15,6 +14,7 @@ import {
   invalidateTableCache,
   isAbortError,
   prepareTable,
+  SDK_BATCH_LIMIT,
 } from './lib/bitable_writer';
 import './index.css';
 
@@ -87,7 +87,6 @@ export default function App() {
   const [rows, setRows] = useState<RowState[]>([]);
   const [runPaths, setRunPaths] = useState<string[]>([]);
   const [running, setRunning] = useState(false);
-  const [inferTypes, setInferTypes] = useState(true);
   const [batchSize, setBatchSize] = useState<number>(DEFAULT_BATCH);
   const [mode, setMode] = useState<WriteMode>('append');
   const [confirmOpen, setConfirmOpen] = useState(false);
@@ -144,7 +143,7 @@ export default function App() {
       setZipInfo(info);
       setStage('unlock');
       log(
-        `已选择 ${info.fileName}：${formatMix(info)} · ${
+        `已选择 ${info.fileName}：${info.dataCount} 个 sas7bdat · ${
           info.encrypted ? (info.zipCrypto ? 'ZipCrypto 加密' : 'AES 加密') : '未加密'
         }`,
       );
@@ -289,7 +288,7 @@ export default function App() {
         patch(row.entry.path, { status: '读取中', message: '', written: 0, deleted: 0, clearTotal: 0 });
         const cursor = await loaded.readDomain(row.entry.path);
         patch(row.entry.path, { status: '建表中' });
-        const prepared = await prepareTable(row.entry, inferTypes);
+        const prepared = await prepareTable(row.entry);
         const schema = prepared.created
           ? `新建数据表，${prepared.fields.size} 个字段`
           : `已有数据表，补建 ${prepared.addedFields} 个字段`;
@@ -356,9 +355,8 @@ export default function App() {
             <h1>数据包导入</h1>
           </div>
         </div>
-        <div className="formats" title="支持 SAS 二进制数据集与 SAS XML 导出，包内同名数据集优先读 sas7bdat">
+        <div className="formats" title="支持 SAS 二进制数据集">
           <span className="format is-sas">sas7bdat</span>
-          <span className="format is-xml">xml</span>
         </div>
       </header>
 
@@ -418,7 +416,7 @@ export default function App() {
                 </svg>
               </span>
               <strong>{inspecting ? '读取压缩包目录…' : '拖入或点击选择 zip 数据包'}</strong>
-              <span className="dropzone-hint">SAS 导出的压缩包，包内每个 sas7bdat / xml 对应一个数据集</span>
+              <span className="dropzone-hint">SAS 导出的压缩包，包内每个 sas7bdat 对应一个数据集</span>
             </div>
             <input
               ref={fileRef}
@@ -441,7 +439,7 @@ export default function App() {
               <div className="filecard-meta">
                 <span>{formatBytes(zipInfo.fileSize)}</span>
                 <span className="sep" />
-                <span>{formatMix(zipInfo)}</span>
+                <span>{zipInfo.dataCount} 个 sas7bdat</span>
                 <span className="sep" />
                 <span>{zipInfo.entryCount} 个条目</span>
               </div>
@@ -517,8 +515,8 @@ export default function App() {
             )}
 
             <p className="panel-note">
-              先校验密码再逐域解析：密码错误会立刻提示，压缩包不会丢，改完密码重试即可。
-              {zipInfo.sasCount > 0 && ' sas7bdat 需要整份解压后才能读元信息，大域会慢几秒。'}
+              先校验密码再逐域解析：密码错误会立刻提示，压缩包不会丢，改完密码重试即可。sas7bdat
+              需要整份解压后才能读元信息，大域会慢几秒。
             </p>
           </section>
         )}
@@ -562,31 +560,18 @@ export default function App() {
             </div>
 
             <div className="controls">
-              <label className="switch">
-                <input
-                  type="checkbox"
-                  checked={inferTypes}
-                  disabled={running}
-                  onChange={event => setInferTypes(event.target.checked)}
-                />
-                <span className="switch-track" aria-hidden="true">
-                  <span className="switch-knob" />
-                </span>
-                <span className="switch-text" title="sas7bdat 按 SAS 自带的列类型与日期格式建字段，xml 按列内容识别；关闭则全部按文本导入">
-                  识别列类型
-                </span>
-              </label>
               <label className="select">
                 <span>每批写入</span>
                 <select
                   value={batchSize}
                   disabled={running}
-                  title="JS SDK 单次上限 5000 行。老宿主可能只接受更小的批量，被拒时自动沿 5000→2000→1000→500→200 降级并保持。"
+                  title="JS SDK 单次上限 5000 行。10000 / 20000 仅供压测，宿主拒绝后会自动沿 5000→2000→1000→500→200 降级并保持。"
                   onChange={event => setBatchSize(Number(event.target.value))}
                 >
                   {BATCH_OPTIONS.map(size => (
                     <option key={size} value={size}>
-                      {size} 条{size === DEFAULT_BATCH ? '（上限）' : ''}
+                      {size} 条
+                      {size === SDK_BATCH_LIMIT ? '（SDK 上限）' : size > SDK_BATCH_LIMIT ? '（压测）' : ''}
                     </option>
                   ))}
                 </select>
@@ -645,7 +630,6 @@ export default function App() {
                 <DomainRow
                   key={row.entry.path}
                   row={row}
-                  inferTypes={inferTypes}
                   disabled={running}
                   onToggle={selected => patch(row.entry.path, { selected })}
                 />
@@ -790,21 +774,12 @@ export default function App() {
   );
 }
 
-function formatMix(info: ZipInfo): string {
-  const parts: string[] = [];
-  if (info.sasCount) parts.push(`${info.sasCount} 个 sas7bdat`);
-  if (info.xmlCount) parts.push(`${info.xmlCount} 个 xml`);
-  return parts.join(' + ');
-}
-
 function DomainRow({
   row,
-  inferTypes,
   disabled,
   onToggle,
 }: {
   row: RowState;
-  inferTypes: boolean;
   disabled: boolean;
   onToggle: (selected: boolean) => void;
 }) {
@@ -817,7 +792,7 @@ function DomainRow({
     : entry.rowCount
       ? Math.min(100, (row.written / entry.rowCount) * 100)
       : 0;
-  const kinds = inferTypes ? kindCounts(entry) : null;
+  const kinds = kindCounts(entry);
   return (
     <div className={`domain ${row.status === '失败' ? 'is-error' : ''} ${row.selected ? '' : 'is-muted'}`}>
       <label className="check">
@@ -832,21 +807,17 @@ function DomainRow({
       </label>
       <div className="domain-body">
         <div className="domain-title">
-          <span className={`fmt is-${entry.kind}`} title={entry.kind === 'sas7bdat' ? 'SAS 二进制数据集，列类型取自 SAS 元信息' : 'SAS XML 导出，列类型按内容推断'}>
-            {entry.kind === 'sas7bdat' ? 'SAS' : 'XML'}
-          </span>
           <strong>{entry.tableName}</strong>
           <span className="domain-meta">
-            {entry.rowCount ? `${entry.rowCount.toLocaleString()} 行` : '空数据集'} · {entry.columns.length} 列 · {formatBytes(entry.rawSize)}
+            {entry.rowCount ? `${entry.rowCount.toLocaleString()} 行` : '空数据集'} · {entry.columns.length} 列 ·{' '}
+            {formatBytes(entry.rawSize)}
           </span>
         </div>
-        {kinds && (
-          <div className="kinds">
-            <span className="kind is-number">数值 {kinds.number}</span>
-            <span className="kind is-date">日期 {kinds.datetime}</span>
-            <span className="kind is-text">文本 {kinds.text}</span>
-          </div>
-        )}
+        <div className="kinds">
+          <span className="kind is-number">数值 {kinds.number}</span>
+          <span className="kind is-date">日期 {kinds.datetime}</span>
+          <span className="kind is-text">文本 {kinds.text}</span>
+        </div>
         {(row.written > 0 || row.deleted > 0 || row.status === '写入中' || clearing) && (
           <div className="bar-track is-thin">
             <div
@@ -883,7 +854,7 @@ function DomainRow({
 
 function kindCounts(entry: DomainEntry) {
   const counts = { number: 0, datetime: 0, text: 0 };
-  for (const col of entry.columns) counts[columnKind(col)]++;
+  for (const col of entry.columns) counts[col.kind]++;
   return counts;
 }
 

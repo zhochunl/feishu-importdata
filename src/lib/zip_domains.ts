@@ -1,16 +1,12 @@
-import { BlobReader, TextWriter, Uint8ArrayWriter, ZipReader, type FileEntry } from '@zip.js/zip.js';
+import { BlobReader, Uint8ArrayWriter, ZipReader, type FileEntry } from '@zip.js/zip.js';
 import type { DomainCursor, DomainMeta } from './domain';
-import { RecordCursor, scanDomain } from './sas_xml';
 import { scanSas7bdat, Sas7bdatCursor, type SasColumn } from './sas7bdat';
-
-export type DomainKind = 'xml' | 'sas7bdat';
 
 export interface DomainEntry extends DomainMeta {
   /** zip 内文件名，作为读取键 */
   path: string;
-  /** 解压后的体积：xml 是字符数，sas7bdat 是字节数 */
+  /** 解压后的字节数 */
   rawSize: number;
-  kind: DomainKind;
 }
 
 export interface ZipInfo {
@@ -18,8 +14,6 @@ export interface ZipInfo {
   fileSize: number;
   entryCount: number;
   dataCount: number;
-  xmlCount: number;
-  sasCount: number;
   encrypted: boolean;
   zipCrypto: boolean;
 }
@@ -32,8 +26,8 @@ export interface LoadedZip {
   close(): Promise<void>;
 }
 
-const DATA_ENTRY = /\.(xml|sas7bdat)$/i;
-const NO_DATA = '里没有 .sas7bdat 或 .xml 数据文件，请确认选的是 SAS 导出的压缩包';
+const DATA_ENTRY = /\.sas7bdat$/i;
+const NO_DATA = '里没有 .sas7bdat 数据文件，请确认选的是 SAS 导出的压缩包';
 
 export class ZipPasswordError extends Error {
   constructor(message = '解压密码不正确，请重新输入后再解析') {
@@ -53,23 +47,8 @@ export function isPasswordError(err: unknown): boolean {
   return err instanceof Error && (err.name === 'ZipPasswordError' || err.name === 'ZipPasswordRequiredError');
 }
 
-function kindOf(filename: string): DomainKind {
-  return /\.sas7bdat$/i.test(filename) ? 'sas7bdat' : 'xml';
-}
-
 function isDataEntry(entry: { directory: boolean; filename: string }): entry is FileEntry {
   return !entry.directory && DATA_ENTRY.test(entry.filename);
-}
-
-/** 同名数据集两种格式都在时只留 sas7bdat：它自带列类型，比按内容猜更准。 */
-function dedupe(entries: FileEntry[]): FileEntry[] {
-  const byBase = new Map<string, FileEntry>();
-  for (const entry of entries) {
-    const base = entry.filename.replace(/^.*[\\/]/, '').replace(DATA_ENTRY, '').toLowerCase();
-    const kept = byBase.get(base);
-    if (!kept || kindOf(kept.filename) === 'xml') byBase.set(base, entry);
-  }
-  return [...byBase.values()];
 }
 
 /** 只读中央目录，不解密任何内容：选包阶段就能知道是否加密、有多少数据集。 */
@@ -77,16 +56,13 @@ export async function inspectZip(file: File): Promise<ZipInfo> {
   const reader = new ZipReader(new BlobReader(file));
   try {
     const entries = await reader.getEntries();
-    const data = dedupe(entries.filter(isDataEntry));
+    const data = entries.filter(isDataEntry);
     if (!data.length) throw new Error(`${file.name} ${NO_DATA}`);
-    const sasCount = data.filter(entry => kindOf(entry.filename) === 'sas7bdat').length;
     return {
       fileName: file.name,
       fileSize: file.size,
       entryCount: entries.length,
       dataCount: data.length,
-      xmlCount: data.length - sasCount,
-      sasCount,
       encrypted: data.some(entry => entry.encrypted),
       zipCrypto: data.some(entry => entry.zipCrypto),
     };
@@ -106,7 +82,7 @@ export async function loadZip(
 
   let data: FileEntry[];
   try {
-    data = dedupe((await reader.getEntries()).filter(isDataEntry));
+    data = (await reader.getEntries()).filter(isDataEntry);
   } catch (err) {
     await reader.close();
     throw decorate(err);
@@ -135,20 +111,14 @@ export async function loadZip(
   const sasColumns = new Map<string, SasColumn[]>();
   try {
     for (const [index, entry] of data.entries()) {
-      const kind = kindOf(entry.filename);
       const name = entry.filename.replace(/^.*[\\/]/, '');
       // 大域整份解压要几秒，先把当前域名报出去，界面不会看着像卡死
       onProgress?.(index, data.length, name);
       await new Promise(resolve => setTimeout(resolve, 0));
-      if (kind === 'sas7bdat') {
-        const bytes = await entry.getData(new Uint8ArrayWriter());
-        const scan = scanSas7bdat(entry.filename, bytes);
-        sasColumns.set(entry.filename, scan.columns);
-        domains.push({ ...scan.meta, path: entry.filename, rawSize: bytes.length, kind });
-      } else {
-        const xml = await entry.getData(new TextWriter());
-        domains.push({ ...scanDomain(entry.filename, xml), path: entry.filename, rawSize: xml.length, kind });
-      }
+      const bytes = await entry.getData(new Uint8ArrayWriter());
+      const scan = scanSas7bdat(entry.filename, bytes);
+      sasColumns.set(entry.filename, scan.columns);
+      domains.push({ ...scan.meta, path: entry.filename, rawSize: bytes.length });
       onProgress?.(index + 1, data.length, name);
       await new Promise(resolve => setTimeout(resolve, 0));
     }
@@ -167,12 +137,9 @@ export async function loadZip(
       const entry = byName.get(path);
       if (!entry) throw new Error(`压缩包里找不到 ${path}`);
       try {
-        if (kindOf(path) === 'sas7bdat') {
-          const bytes = await entry.getData(new Uint8ArrayWriter());
-          const domain = domains.find(item => item.path === path)!;
-          return new Sas7bdatCursor(bytes, sasColumns.get(path)!, domain.rowCount);
-        }
-        return new RecordCursor(await entry.getData(new TextWriter()));
+        const bytes = await entry.getData(new Uint8ArrayWriter());
+        const domain = domains.find(item => item.path === path)!;
+        return new Sas7bdatCursor(bytes, sasColumns.get(path)!, domain.rowCount);
       } catch (err) {
         throw decorate(err);
       }

@@ -8,7 +8,7 @@ import {
   type ReadStatValue,
   type Variable,
 } from '@irbisadm/statfmt';
-import { emptyColumn, type CellValue, type DomainBatch, type DomainCursor, type DomainMeta, type FieldKind } from './domain';
+import { type CellValue, type DomainBatch, type DomainCursor, type DomainMeta, type FieldKind } from './domain';
 
 export interface SasColumn {
   name: string;
@@ -100,7 +100,7 @@ export function scanSas7bdat(fileName: string, bytes: Uint8Array): SasScan {
       fileName,
       tableName: tableName || fallback,
       rowCount,
-      columns: columns.map(column => ({ ...emptyColumn(column.name), kind: column.kind, label: column.label })),
+      columns: columns.map(column => ({ name: column.name, kind: column.kind, label: column.label })),
     },
     columns,
   };

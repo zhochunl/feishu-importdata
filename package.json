@@ -3,7 +3,7 @@
   "private": true,
   "version": "1.0.0",
   "type": "module",
-  "description": "飞书多维表格边栏插件：浏览器端解密 zip、解析 SAS sas7bdat / XML 数据包并写入同名数据表",
+  "description": "飞书多维表格边栏插件：浏览器端解密 zip、解析 SAS sas7bdat 数据包并写入同名数据表",
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
