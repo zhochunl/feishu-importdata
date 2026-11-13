@@ -560,35 +560,35 @@ export default function App() {
             </div>
 
             <div className="controls">
+              <div className="summary">
+                <div className="summary-cell">
+                  <b>{rows.length}</b>
+                  <span>个数据集</span>
+                </div>
+                <div className="summary-cell">
+                  <b>{totalRows.toLocaleString()}</b>
+                  <span>总行数</span>
+                </div>
+                <div className="summary-cell is-accent">
+                  <b>{plannedRows.toLocaleString()}</b>
+                  <span>待写入</span>
+                </div>
+                <div className="summary-cell">
+                  <b>{doneCount}</b>
+                  <span>已完成</span>
+                </div>
+              </div>
+
               <label className="select">
-                <span>每批写入</span>
                 <select value={batchSize} disabled={running} onChange={event => setBatchSize(Number(event.target.value))}>
                   {BATCH_OPTIONS.map(size => (
                     <option key={size} value={size}>
-                      {size}
+                      {size} 行
                     </option>
                   ))}
                 </select>
+                <span className="select-caption">每批写入</span>
               </label>
-            </div>
-
-            <div className="summary">
-              <div className="summary-cell">
-                <b>{rows.length}</b>
-                <span>个数据集</span>
-              </div>
-              <div className="summary-cell">
-                <b>{totalRows.toLocaleString()}</b>
-                <span>总行数</span>
-              </div>
-              <div className="summary-cell is-accent">
-                <b>{plannedRows.toLocaleString()}</b>
-                <span>待写入</span>
-              </div>
-              <div className="summary-cell">
-                <b>{doneCount}</b>
-                <span>已完成</span>
-              </div>
             </div>
 
             <div className="toolbar">
