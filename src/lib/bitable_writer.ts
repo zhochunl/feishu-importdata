@@ -1,4 +1,11 @@
-import { bitable, FieldType, type IFieldConfig, type IRecordValue, type ITable } from '@lark-base-open/js-sdk';
+import {
+  bitable,
+  FieldType,
+  NumberFormatter,
+  type IFieldConfig,
+  type IRecordValue,
+  type ITable,
+} from '@lark-base-open/js-sdk';
 import { type CellValue, type DomainCursor, type DomainMeta, type FieldKind } from './domain';
 
 /** JS SDK 单次最多 5000 行；老宿主可能只收 200 / 1000，被拒时沿这个阶梯往下降。 */
@@ -10,6 +17,8 @@ const LIST_PAGE = 200;
 export interface PreparedField {
   fieldId: string;
   kind: FieldKind;
+  /** 数字字段当前的显示格式；只有默认 0.0 的列才会被改成整数 */
+  formatter?: string;
 }
 
 export interface PreparedTable {
@@ -20,13 +29,32 @@ export interface PreparedTable {
   created: boolean;
   /** 本次补建的字段数 */
   addedFields: number;
+  /** 本次按 SAS 类型改掉字段类型的个数 */
+  convertedFields: number;
 }
+
+const KIND_FIELD_TYPE: Record<FieldKind, FieldType> = {
+  number: FieldType.Number,
+  datetime: FieldType.DateTime,
+  text: FieldType.Text,
+};
 
 /** IFieldConfig 是按 type 判别的联合类型，必须逐字面量返回。 */
 function fieldConfig(name: string, kind: FieldKind): IFieldConfig {
   if (kind === 'number') return { name, type: FieldType.Number };
   if (kind === 'datetime') return { name, type: FieldType.DateTime };
   return { name, type: FieldType.Text };
+}
+
+function kindLabel(kind: FieldKind): string {
+  return kind === 'number' ? '数值' : kind === 'datetime' ? '日期' : '文本';
+}
+
+function typeLabel(type: FieldType): string {
+  if (type === FieldType.Text) return '文本';
+  if (type === FieldType.Number) return '数字';
+  if (type === FieldType.DateTime) return '日期时间';
+  return `类型 ${type}`;
 }
 
 let tableIdByName: Map<string, string> | null = null;
@@ -65,7 +93,7 @@ export async function prepareTable(meta: DomainMeta): Promise<PreparedTable> {
   }
 
   const table = await bitable.base.getTableById(tableId);
-  const fields = await readFields(table, kinds);
+  const { fields, converted } = await readFields(table, meta.tableName, kinds);
 
   // addTable 带的字段未必真的生效，已有表也可能缺列，统一在这里补齐
   let addedFields = 0;
@@ -80,16 +108,43 @@ export async function prepareTable(meta: DomainMeta): Promise<PreparedTable> {
     throw new Error(`${meta.tableName}：${unusable.length} 个列没拿到字段 id（例如 ${unusable.slice(0, 3).join('、')}），已中止写入`);
   }
 
-  return { table, fields, created, addedFields };
+  return { table, fields, created, addedFields, convertedFields: converted };
 }
 
-async function readFields(table: ITable, kinds: Map<string, FieldKind>): Promise<Map<string, PreparedField>> {
+/**
+ * 字段类型一律以 SAS 元信息为准：宿主里同名字段若类型不符，就地改回 SAS 对应的类型，
+ * 不再继承旧表（例如早期按内容推断出来的数字字段）的类型。
+ */
+async function readFields(
+  table: ITable,
+  tableName: string,
+  kinds: Map<string, FieldKind>,
+): Promise<{ fields: Map<string, PreparedField>; converted: number }> {
   const fields = new Map<string, PreparedField>();
-  for (const field of await table.getFieldList()) {
-    const name = await field.getName();
-    if (kinds.has(name)) fields.set(name, { fieldId: field.id, kind: kinds.get(name)! });
+  let converted = 0;
+  // 一次拿全表字段元信息（类型 + 数字格式），避免逐字段 getName/getType/getMeta 的多次往返
+  for (const meta of await table.getFieldMetaList()) {
+    const name = meta.name;
+    const kind = kinds.get(name);
+    if (!kind) continue;
+    if (meta.type !== KIND_FIELD_TYPE[kind]) {
+      try {
+        await table.setField(meta.id, fieldConfig(name, kind));
+      } catch (err) {
+        throw new Error(
+          `${tableName} 的「${name}」字段在表里是${typeLabel(meta.type)}、SAS 里是${kindLabel(kind)}，` +
+            `自动改字段类型失败（${messageOf(err)}）；请先在多维表格里手动改成${kindLabel(kind)}再导入`,
+        );
+      }
+      converted++;
+    }
+    const formatter =
+      kind === 'number'
+        ? (meta.property as { formatter?: string } | undefined)?.formatter
+        : undefined;
+    fields.set(name, { fieldId: meta.id, kind, formatter });
   }
-  return fields;
+  return { fields, converted };
 }
 
 function toCellValue(value: CellValue, kind: FieldKind): number | string | null {
@@ -148,6 +203,12 @@ export async function importDomain(
     progress.deleted = await clearTable(prepared.table, state, hooks);
   }
 
+  // 数字字段先按默认格式建/改，整列都写完后才知道该不该用整数格式
+  const numberStates = new Map<string, NumberColumnState>();
+  for (const [name, field] of prepared.fields) {
+    if (field.kind === 'number') numberStates.set(field.fieldId, { name, integral: true, formatter: field.formatter });
+  }
+
   for (;;) {
     const { rows, done } = cursor.next(state.size);
     if (rows.length) {
@@ -157,7 +218,12 @@ export async function importDomain(
           const field = prepared.fields.get(name);
           if (!field) continue;
           const cell = toCellValue(value, field.kind);
-          if (cell !== null) fields[field.fieldId] = cell;
+          if (cell === null) continue;
+          if (typeof cell === 'number') {
+            const number = numberStates.get(field.fieldId);
+            if (number && !Number.isInteger(cell)) number.integral = false;
+          }
+          fields[field.fieldId] = cell;
         }
         return { fields };
       });
@@ -166,8 +232,42 @@ export async function importDomain(
       progress.batches++;
       hooks.onBatch?.(progress);
     }
-    if (done) return progress;
+    if (done) {
+      await applyIntegerFormatter(prepared.table, numberStates, hooks.onNotice);
+      return progress;
+    }
     if (hooks.shouldAbort?.()) throw new AbortError();
+  }
+}
+
+interface NumberColumnState {
+  name: string;
+  /** 整列写下来没有出现过小数（空列也算整数） */
+  integral: boolean;
+  /** 字段原有的显示格式；用户手工设过（非默认 0.0）就不动 */
+  formatter?: string;
+}
+
+/** 数学上是整数的列用「0」格式，否则飞书数字字段默认的 0.0 会把 1001 显示成 1001.0。 */
+async function applyIntegerFormatter(
+  table: ITable,
+  states: Map<string, NumberColumnState>,
+  onNotice: ((text: string) => void) | undefined,
+): Promise<void> {
+  for (const [fieldId, state] of states) {
+    if (!state.integral) continue;
+    if (state.formatter === NumberFormatter.INTEGER) continue;
+    if (state.formatter && state.formatter !== NumberFormatter.DIGITAL_ROUNDED_1) continue;
+    try {
+      await table.setField(fieldId, {
+        name: state.name,
+        type: FieldType.Number,
+        property: { formatter: NumberFormatter.INTEGER },
+      });
+    } catch (err) {
+      // 只是显示格式，改不动不影响数据，提示一句继续
+      onNotice?.(`${state.name}：整数格式设置失败（${messageOf(err)}），单元格会按默认小数位显示`);
+    }
   }
 }
 

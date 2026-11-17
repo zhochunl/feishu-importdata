@@ -264,13 +264,13 @@
         addTable: ([cfg]) => {
           const table = {
             id: nid('tbl'), name: cfg.name, origin: 'new', added: 0, deleted: 0, records: [],
-            fields: (cfg.fields || []).map(f => ({ id: nid('fld'), name: f.name, type: f.type })),
+            fields: (cfg.fields || []).map(f => ({ id: nid('fld'), name: f.name, type: f.type, property: f.property ?? null })),
           };
           tables.push(table);
           return { tableId: table.id, index: tables.length - 1 };
         },
-        getFieldMetaList: (args, ctx) => (tableOf(ctx)?.fields ?? []).map(f => ({ id: f.id, name: f.name, type: f.type, property: null })),
-        getFieldMetaById: ([id], ctx) => { const f = tableOf(ctx)?.fields.find(x => x.id === id); return f ? { id: f.id, name: f.name, type: f.type, property: null } : null; },
+        getFieldMetaList: (args, ctx) => (tableOf(ctx)?.fields ?? []).map(f => ({ id: f.id, name: f.name, type: f.type, property: f.property ?? null })),
+        getFieldMetaById: ([id], ctx) => { const f = tableOf(ctx)?.fields.find(x => x.id === id); return f ? { id: f.id, name: f.name, type: f.type, property: f.property ?? null } : null; },
         isFieldExist: ([id], ctx) => !!tableOf(ctx)?.fields.some(f => f.id === id),
         getFieldIdByName: ([name], ctx) => tableOf(ctx)?.fields.find(f => f.name === name)?.id ?? '',
         getName: (args, ctx) => {
@@ -280,8 +280,16 @@
         getType: (args, ctx) => tableOf(ctx)?.fields.find(f => f.id === ctx[1])?.type ?? 1,
         addField: ([cfg], ctx) => {
           const table = tableOf(ctx);
-          const field = { id: nid('fld'), name: cfg.name ?? cfg, type: cfg.type ?? 1 };
+          const field = { id: nid('fld'), name: cfg.name ?? cfg, type: cfg.type ?? 1, property: cfg.property ?? null };
           table.fields.push(field);
+          return field.id;
+        },
+        setField: ([id, cfg], ctx) => {
+          const field = tableOf(ctx)?.fields.find(x => x.id === id);
+          if (!field) return fail(1254001, `Field not found: ${id}`);
+          if (cfg?.type != null) field.type = cfg.type;
+          if (cfg?.name != null) field.name = cfg.name;
+          if (cfg?.property != null) field.property = { ...(field.property ?? {}), ...cfg.property };
           return field.id;
         },
         addRecords: ([records], ctx) => {
@@ -335,6 +343,7 @@
         if (method === 'getRecordIdListByPage') return `表 ${tableOf(ctx)?.name} token=${args[0]?.pageToken ?? 0} → ${res.recordIds.length} 条 hasMore=${res.hasMore}`;
         if (method === 'addTable') return `新建 ${args[0].name}（${(args[0].fields || []).length} 字段）`;
         if (method === 'addField') return `表 ${tableOf(ctx)?.name} 补字段 ${args[0]?.name ?? args[0]}`;
+        if (method === 'setField') return `表 ${tableOf(ctx)?.name} 改字段 ${args[0]} → type=${args[1]?.type ?? '-'} ${args[1]?.property ? JSON.stringify(args[1].property) : ''}`;
         if (method === 'getTableMetaList') return `${res.length} 张表`;
         return JSON.stringify(args).slice(0, 120);
       }

@@ -289,16 +289,23 @@ export default function App() {
       }
       try {
         patch(row.entry.path, { status: '读取中', message: '', written: 0, deleted: 0, clearTotal: 0 });
+        const readStarted = Date.now();
         const cursor = await loaded.readDomain(row.entry.path);
+        const readMs = Date.now() - readStarted;
         patch(row.entry.path, { status: '建表中' });
+        const prepareStarted = Date.now();
         const prepared = await prepareTable(row.entry);
+        const prepareMs = Date.now() - prepareStarted;
         const schema = prepared.created
           ? `新建数据表，${prepared.fields.size} 个字段`
-          : `已有数据表，补建 ${prepared.addedFields} 个字段`;
+          : `已有数据表，补建 ${prepared.addedFields} 个字段${
+              prepared.convertedFields ? `，按 SAS 类型改 ${prepared.convertedFields} 个字段` : ''
+            }`;
         const clearing = replace && !prepared.created;
         patch(row.entry.path, { status: clearing ? '清空中' : '写入中', message: schema });
         log(`${row.entry.tableName}：${schema}`);
 
+        const writeStarted = Date.now();
         const done = await importDomain(
           cursor,
           prepared,
@@ -311,12 +318,16 @@ export default function App() {
           },
           { batchSize, replace },
         );
-        const summary = done.deleted
-          ? `${schema}；清空 ${done.deleted.toLocaleString()} 行后写入 ${done.rows.toLocaleString()} 行`
-          : `${schema}；已写入 ${done.rows.toLocaleString()} 行`;
+        const writeMs = Date.now() - writeStarted;
+        const cost = `解析 ${formatDuration(readMs)}，建表 ${formatDuration(prepareMs)}，写入 ${formatDuration(writeMs)}`;
+        const summary = `${
+          done.deleted
+            ? `${schema}；清空 ${done.deleted.toLocaleString()} 行后写入 ${done.rows.toLocaleString()} 行`
+            : `${schema}；已写入 ${done.rows.toLocaleString()} 行`
+        }（${cost}）`;
         patch(row.entry.path, { status: '完成', written: done.rows, deleted: done.deleted, message: summary });
         log(
-          `${row.entry.tableName}：${done.deleted ? `删除 ${done.deleted.toLocaleString()} 行，` : ''}写入 ${done.rows.toLocaleString()} 行（${done.batches} 批）`,
+          `${row.entry.tableName}：${done.deleted ? `删除 ${done.deleted.toLocaleString()} 行，` : ''}写入 ${done.rows.toLocaleString()} 行（${done.batches} 批）；${cost}`,
           'ok',
         );
       } catch (err) {
